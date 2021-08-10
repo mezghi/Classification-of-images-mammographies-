@@ -1,0 +1,254 @@
+
+import numpy as np
+import csv
+import cv2
+import matplotlib.pyplot as plt
+import matplotlib.image as mpimg
+import matplotlib.pyplot as plt
+import matplotlib.patches as mpatches
+import pandas as pd
+
+from pathlib import Path
+from skimage import data
+from skimage.filters import threshold_otsu
+from skimage.segmentation import clear_border
+from skimage.measure import label, regionprops
+from skimage.morphology import closing, square
+from skimage.color import label2rgb
+from scipy import ndimage
+from skimage.feature import greycomatrix, greycoprops
+#from __future__ import print_function
+
+#from google.colab import files
+#uploaded = files.upload()
+
+def imfill(im_th) :
+  im_th2 = cv2.bitwise_not(im_th)
+  im_floodfill = im_th.copy()
+  h, w = im_th.shape[:2]
+  mask = np.zeros((h+2, w+2), np.uint8)
+  cv2.floodFill(im_floodfill, mask, (0,0), 255);
+  im_floodfill_inv = cv2.bitwise_not(im_floodfill)
+  im_out = im_th2 | im_floodfill_inv 
+  return im_out
+
+def bwareaopen(imgBW, areaPixels):
+    imgBWcopy = imgBW.copy()
+    contours,hierarchy = cv2.findContours(imgBWcopy.copy(), cv2.RETR_LIST, 
+        cv2.CHAIN_APPROX_SIMPLE)
+
+    # For each contour, determine its total occupying area
+    for idx in np.arange(len(contours)):
+        area = cv2.contourArea(contours[idx])
+        if (area >= 0 and area <= areaPixels):
+            cv2.drawContours(imgBWcopy, contours, idx, (0,0,0), -1)
+
+    return imgBWcopy
+
+################################################################################
+
+
+################################################################################
+path=Path("C:\\Users\\mezgh\\OneDrive\\Desktop\\DATA\\train img")
+imagepath =path.glob("*.jpg")
+masses=Path("C:\\Users\\mezgh\\OneDrive\\Desktop\\DATA\\train mask")
+massespath =masses.glob("*.jpg")
+
+e=0;
+famille_panda=np.empty((0, 7), int)
+# Read in image
+    
+for imagepath,massespath in zip(path.glob("*.jpg"),masses.glob("*.jpg")):
+    e=e+1;
+    seuil = 100
+    img=cv2.imread(str(imagepath))
+    img=cv2.cvtColor(img,cv2.IMREAD_COLOR)[:,:,1]
+    img=cv2.resize(img,(512,512))
+    
+    
+    vt=cv2.imread(str(massespath))
+    vt=cv2.cvtColor(img,cv2.IMREAD_COLOR)[:,:,1]
+    vt=cv2.resize(vt,(512,512))
+    
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))    
+    img2 = clahe.apply(img)  
+
+    (retVal, im_th) = cv2.threshold(img2, seuil, 1, cv2.THRESH_BINARY)
+    (retVal, im_vt) = cv2.threshold(vt, 200, 1, cv2.THRESH_BINARY)
+
+
+    im_th = bwareaopen(im_th,200)#supprimer les petite région
+    im_th=ndimage.binary_fill_holes(im_th.astype(np.uint8)).astype(np.uint8)#Remplissage des trous
+    im_th = clear_border(im_th)#supprimer les objets touchants le bord
+
+    label_image = label(im_th)
+
+    for i in np.unique(label_image) :
+        region = label_image == i
+    
+    for i in range(len(label_image)):    
+# iterate through columns 
+        for j in range(len(label_image[0])):              
+             label_image[i][j] = label_image[i][j] * vt[i][j] 
+    some = np.sum( label_image, dtype = np.uint8)
+    if (some) >=1 :
+        classe = 1
+    else :
+        classe = 0
+    
+    A = img
+    A[region==False]=0 
+ 
+    glcm = greycomatrix(A, distances=[5], angles=[0], levels=256, symmetric=True, normed=True)
+ 
+    contrast = greycoprops(glcm, 'contrast')
+    dissimilarity = greycoprops(glcm, 'dissimilarity')
+    homogeneity = greycoprops(glcm, 'homogeneity')
+    ASM = greycoprops(glcm, 'ASM')
+    Energy = greycoprops(glcm, 'energy')
+    correlation = greycoprops(glcm, 'correlation')
+
+  
+    vector=np.array([[contrast,dissimilarity,homogeneity,ASM,Energy,correlation,classe ]])
+ 
+    famille_panda=np.append( famille_panda,vector, 0)
+
+    famille_panda_numpy = np.array(famille_panda)
+   
+    famille_panda_df = pd.DataFrame(famille_panda_numpy,
+                                   
+                                   columns = ['contrast','dissimilarity','homogeneity','ASM','Energy','correlation','classe' ])
+
+#famille_panda_df
+ 
+#sizes=famille_panda_df['classe'].value_count(sort=1)
+
+#print(famille_panda_df.head())
+#df=famille_panda_df.drop(['e'],axis=1,inplace=True)
+#defene dependent variable ;
+Train_mask=famille_panda_df['classe'].values
+Train_mask=Train_mask.astype('int')
+#defene vindependant variable
+Train_img=famille_panda_df.drop(labels=['classe'],axis=1)
+#faire l'apprentissage;#########################################################################################################
+from sklearn.ensemble import RandomForestRegressor
+rf = RandomForestRegressor(n_estimators = 1000, random_state = 30)
+rf.fit(Train_img, Train_mask)
+
+
+#lire DATA test
+test_panda=np.empty((0, 7), int)
+
+dataimgtest=Path("C:\\Users\\mezgh\\OneDrive\\Desktop\\DATA\\test img")
+testimagepath =dataimgtest.glob("*.jpg")
+datamasktest=Path("C:\\Users\\mezgh\\OneDrive\\Desktop\\DATA\\test mask")
+testmaskpath =datamasktest.glob("*.jpg")
+for testimagepath,datamaskpath in zip(dataimgtest.glob("*.jpg"),datamasktest.glob("*.jpg")):
+    e=e+1;
+    seuil = 190
+    img=cv2.imread(str(testimagepath))
+    img=cv2.cvtColor(img,cv2.IMREAD_COLOR)[:,:,1]
+    img=cv2.resize(img,(512,512))
+    
+    
+    vt=cv2.imread(str(datamaskpath))
+    vt=cv2.cvtColor(img,cv2.IMREAD_COLOR)[:,:,1]
+    vt=cv2.resize(vt,(512,512))
+    
+    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8,8))    
+    img2 = clahe.apply(img)  
+
+    (retVal, im_th) = cv2.threshold(img2, seuil, 1, cv2.THRESH_BINARY)
+    (retVal, im_vt) = cv2.threshold(vt, 200, 1, cv2.THRESH_BINARY)
+    
+    im_th = bwareaopen(im_th,200)#supprimer les petite région
+    im_th=ndimage.binary_fill_holes(im_th.astype(np.uint8)).astype(np.uint8)#Remplissage des trous
+    im_th = clear_border(im_th)#supprimer les objets touchants le bord
+    label_image = label(im_th)
+
+    for i in np.unique(label_image) :
+        region = label_image == i
+    
+    superposition = np.multiply(vt.astype(np.uint8), region.astype(np.uint8))
+    for i in range(len(label_image)):    
+# iterate through columns 
+            for j in range(len(label_image[0])): 
+                label_image[i][j] = label_image[i][j] * vt[i][j]
+            some = np.sum(label_image, dtype = np.uint8)
+            if some >= 1:
+                classe=1
+            else:
+                classe=0
+   
+    T = img
+    T[region==False]=0 
+    glcm = greycomatrix(T, distances=[5], angles=[0], levels=256, symmetric=True, normed=True)
+ 
+    contrast = greycoprops(glcm, 'contrast')
+    dissimilarity = greycoprops(glcm, 'dissimilarity')
+    homogeneity = greycoprops(glcm, 'homogeneity')
+    ASM = greycoprops(glcm, 'ASM')
+    Energy = greycoprops(glcm, 'energy')
+    correlation = greycoprops(glcm, 'correlation')
+
+  
+    T_vector=np.array([[contrast,dissimilarity,homogeneity,ASM,Energy,correlation,classe ]])
+ 
+    test_panda=np.append( test_panda,T_vector, 0)
+
+    test_panda_numpy = np.array(test_panda)
+   
+    test_panda_df = pd.DataFrame(test_panda_numpy,
+                                   
+                                   columns = ['contrast','dissimilarity','homogeneity','ASM','Energy','correlation','classe' ])
+
+#test_panda_df
+test_mask=test_panda_df['classe'].values
+test_mask=test_mask.astype('int')
+#defene vindependant variable
+test_img=test_panda_df.drop(labels=['classe'],axis=1)
+prediction_test =rf.predict(test_img)
+prediction_test=prediction_test.astype('int')
+print("les classe de prediction ",prediction_test )
+print("les valides classes",test_mask )
+from sklearn import metrics
+print("accuracy=",metrics.accuracy_score(test_mask,prediction_test))
+feature_list=list(Train_img.columns)
+feature_imp=pd.Series(rf.feature_importances_,index=feature_list).sort_values(ascending=False)
+print(feature_imp)
+
+from sklearn.metrics import confusion_matrix
+
+cm1 = confusion_matrix(test_mask,prediction_test)
+print('Confusion Matrix : \n', cm1)
+sensitivity1 = cm1[0,0]/(cm1[0,0]+cm1[0,1])
+print('Sensitivity : ', sensitivity1 )
+
+specificity1 = cm1[1,1]/(cm1[1,0]+cm1[1,1])
+print('Specificity : ', specificity1)
+###################################################################################################
+import numpy as np
+import matplotlib.pyplot as plt
+import random
+from sklearn.metrics import auc, roc_auc_score, roc_curve
+
+
+import numpy as np  
+import pandas as pd  
+import matplotlib.pyplot as plt  
+import seaborn as sns  
+from sklearn.datasets import make_classification  
+from sklearn.neighbors import KNeighborsClassifier  
+from sklearn.ensemble import RandomForestClassifier  
+from sklearn.model_selection import train_test_split  
+from sklearn.metrics import roc_curve  
+def plot_roc_curve(fper, tper):  
+    plt.plot(fper, tper, color='orange', label='ROC')
+    plt.plot([0, 1], [0, 1], color='darkblue', linestyle='--')
+    plt.xlabel('False Positive Rate')
+    plt.ylabel('True Positive Rate')
+    plt.title('Receiver Operating Characteristic (ROC) Curve')
+    plt.legend()
+    plt.show()
+fper, tper, thresholds = roc_curve(test_mask,prediction_test) 
+plot_roc_curve(fper, tper)
